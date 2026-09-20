@@ -1,43 +1,32 @@
-"""agent.db: conversations, runs and the job queue."""
-import json
-import time
+import json  # noqa: F401
+import sqlite3
 import uuid
-from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 
-from app.placement_db import connect
-
-SCHEMA = Path(__file__).resolve().parent.parent / "schema" / "agent.sql"
-NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
-TERMINAL = ("succeeded", "failed", "cancelled", "dead")
+SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schema"
 
 
-@dataclass(frozen=True)
-class Claimed:
-    run_id: str
-    thread_id: str
-    attempts: int
+class ConversationStore:
+    """The agent's memory in SQLite. All SQL for threads, messages, runs and steps lives here."""
 
+    def __init__(self, path: str = ":memory:"):
+        self.conn = sqlite3.connect(path, isolation_level=None)   # autocommit; transactions are explicit
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
 
-class RunStore:
-    def __init__(self, path: str = ":memory:", clock: Callable[[], float] = time.time):
-        self.conn = connect(path)
-        self.clock = clock
-
-    # ================================================================== given (Day 2 answers)
+    # ------------------------------------------------------------------ given
 
     def migrate(self) -> None:
-        self.conn.executescript(SCHEMA.read_text())
+        for name in ("agent.sql", "append_only.sql"):
+            sql = (SCHEMA_DIR / name).read_text()
+            if sql.strip():
+                self.conn.executescript(sql)
 
     @contextmanager
     def transaction(self):
-        """BEGIN IMMEDIATE: take the write lock first, so two workers queue instead of deadlocking."""
-        if self.conn.in_transaction:
-            yield self.conn
-            return
-        self.conn.execute("BEGIN IMMEDIATE")
+        """Everything inside commits together, or nothing does."""
+        self.conn.execute("BEGIN")
         try:
             yield self.conn
         except BaseException:
@@ -51,263 +40,52 @@ class RunStore:
         return thread_id
 
     def get_thread(self, thread_id: str) -> dict | None:
-        r = self.conn.execute("SELECT * FROM thread WHERE id = ?", (thread_id,)).fetchone()
-        return dict(r) if r else None
-
-    def append_message(self, thread_id: str, role: str, text: str) -> int:
-        cur = self.conn.execute(
-            "INSERT INTO message (thread_id, seq, role, text)"
-            " VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM message WHERE thread_id = ?), ?, ?)",
-            (thread_id, thread_id, role, text))
-        return self.conn.execute("SELECT seq FROM message WHERE id = ?", (cur.lastrowid,)).fetchone()["seq"]
-
-    def load_history(self, thread_id: str) -> list[dict]:
-        rows = self.conn.execute("SELECT seq, role, text FROM message WHERE thread_id = ? ORDER BY seq",
-                                 (thread_id,)).fetchall()
-        return [dict(r) for r in rows]
-
-    def record_model_step(self, run_id: str, seq: int, tokens_in: int, tokens_out: int,
-                          text: str | None, tool_calls: list[dict]) -> int:
-        with self.transaction() as c:
-            step_id = c.execute(
-                "INSERT INTO run_step (run_id, seq, kind, tokens_in, tokens_out, text, tool_calls)"
-                " VALUES (?, ?, 'model', ?, ?, ?, ?)",
-                (run_id, seq, tokens_in, tokens_out, text, json.dumps(tool_calls))).lastrowid
-            c.execute("UPDATE run SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ?",
-                      (tokens_in, tokens_out, run_id))
-            return step_id
-
-    def record_tool_call(self, run_id: str, seq: int, name: str, args: dict, result: dict,
-                         ok: bool, latency_ms: int, idempotency_key: str | None = None) -> int:
-        with self.transaction() as c:
-            step_id = c.execute("INSERT INTO run_step (run_id, seq, kind) VALUES (?, ?, 'tool')", (run_id, seq)).lastrowid
-            c.execute("INSERT INTO tool_call (run_step_id, tool_name, args, result, ok, latency_ms, idempotency_key)"
-                      " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                      (step_id, name, json.dumps(args, default=str), json.dumps(result, default=str),
-                       int(ok), latency_ms, idempotency_key))
-            return step_id
-
-
-    def load_steps(self, run_id: str) -> list[dict]:
-        """Every recorded step of a run, in order, with JSON decoded."""
-        rows = self.conn.execute(
-            """SELECT s.seq, s.kind, s.text, s.tool_calls, t.tool_name, t.args, t.result, t.ok
-                 FROM run_step s LEFT JOIN tool_call t ON t.run_step_id = s.id
-                WHERE s.run_id = ? ORDER BY s.seq""", (run_id,)).fetchall()
-        out = []
-        for r in rows:
-            d = dict(r)
-            # Explicitly force tool_name to map onto the dict step structure
-            if "tool_name" in d:
-                d["tool_name"] = d["tool_name"]
-            for k in ("tool_calls", "args", "result"):
-                d[k] = json.loads(d[k]) if d[k] is not None else None
-            out.append(d)
-        return out
-
-
-    
-
+        row = self.conn.execute("SELECT * FROM thread WHERE id = ?", (thread_id,)).fetchone()
+        return dict(row) if row else None
 
     def get_run(self, run_id: str) -> dict | None:
-        r = self.conn.execute("SELECT * FROM run WHERE id = ?", (run_id,)).fetchone()
-        return {**dict(r), "steps": self.load_steps(run_id)} if r else None
+        run = self.conn.execute("SELECT * FROM run WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            return None
+        steps = self.conn.execute(
+            """SELECT s.seq, s.kind, s.tokens_in, s.tokens_out,
+                      t.tool_name, t.args, t.result, t.ok, t.latency_ms
+                 FROM run_step s LEFT JOIN tool_call t ON t.run_step_id = s.id
+                WHERE s.run_id = ? ORDER BY s.seq""", (run_id,)).fetchall()
+        return {**dict(run), "steps": [dict(s) for s in steps]}
 
-        # ================================================================== Part 1: the queue (TODO)
+    # ------------------------------------------------------------------ Part 3.2: your SQL
 
-    def enqueue(self, thread_id: str, text: str, model: str, max_attempts: int = 3) -> str:
-        """TODO (Part 1.1): in ONE transaction, save the user's message (self.append_message) and insert a
-        run: new uuid4 id, status 'queued', this model, max_attempts, available_at = self.clock().
-        Return the run id. If either insert fails, neither may remain."""
-        run_id = str(uuid.uuid4())
-        now = self.clock()
-        with self.transaction() as c:
-            self.append_message(thread_id, "user", text)
-            c.execute(
-                "INSERT INTO run (id, thread_id, status, model, max_attempts, available_at) "
-                "VALUES (?, ?, 'queued', ?, ?, ?)",
-                (run_id, thread_id, model, max_attempts, now)
-            )
-        return run_id
+    def append_message(self, thread_id: str, role: str, text: str) -> int:
+        """TODO: insert with seq = this thread's highest seq + 1 (computed in the same INSERT). Return the seq."""
+        raise NotImplementedError
 
-    def claim_next(self, worker_id: str, lease_seconds: float) -> Claimed | None:
-        """TODO (Part 1.2): atomically take the oldest claimable run (status 'queued', available_at <= now,
-        oldest available_at then created_at). Set status 'running', lease_owner = worker_id,
-        lease_until = now + lease_seconds, attempts + 1, started_at if not set. Return Claimed(run_id,
-        thread_id, attempts after the increment), or None.
-        Two workers must never get the same run: find it and take it inside one BEGIN IMMEDIATE."""
-        now = self.clock()
-        with self.transaction() as c:
-            row = c.execute(
-                "SELECT id, thread_id, attempts, started_at FROM run "
-                "WHERE status = 'queued' AND available_at <= ? "
-                "ORDER BY available_at ASC, created_at ASC LIMIT 1",
-                (now,)
-            ).fetchone()
-            if row is None:
-                return None
-            
-            run_id = row["id"]
-            thread_id = row["thread_id"]
-            new_attempts = row["attempts"] + 1
-            lease_until = now + lease_seconds
+    def load_history(self, thread_id: str) -> list[dict]:
+        """TODO: [{"seq", "role", "text"}, ...] in seq order."""
+        raise NotImplementedError
 
-            if row["started_at"] is None:
-                c.execute(
-                    f"UPDATE run SET status = 'running', lease_owner = ?, lease_until = ?, "
-                    f"attempts = ?, started_at = {NOW_SQL} WHERE id = ?",
-                    (worker_id, lease_until, new_attempts, run_id)
-                )
-            else:
-                c.execute(
-                    "UPDATE run SET status = 'running', lease_owner = ?, lease_until = ?, "
-                    "attempts = ? WHERE id = ?",
-                    (worker_id, lease_until, new_attempts, run_id)
-                )
-            return Claimed(run_id, thread_id, new_attempts)
+    def start_run(self, thread_id: str, model: str) -> str:
+        """TODO: new run with a uuid4 id and status 'running'. Return the id."""
+        raise NotImplementedError
 
-    def heartbeat(self, run_id: str, worker_id: str, lease_seconds: float) -> bool:
-        """TODO (Part 1.3): push lease_until to now + lease_seconds, but only while the run is 'running'
-        AND leased to this worker. Return True if it was extended, False otherwise."""
-        now = self.clock()
-        lease_until = now + lease_seconds
-        with self.transaction() as c:
-            cur = c.execute(
-                "UPDATE run SET lease_until = ? WHERE id = ? AND status = 'running' AND lease_owner = ?",
-                (lease_until, run_id, worker_id)
-            )
-            return cur.rowcount > 0
+    def record_model_step(self, run_id: str, seq: int, tokens_in: int, tokens_out: int) -> int:
+        """TODO: insert a 'model' run_step AND add its tokens to the run, in ONE transaction. Return the step id."""
+        raise NotImplementedError
 
-    def reap_expired(self) -> list[str]:
-        """Find 'running' runs whose lease_until is in the past (their worker died).
-        attempts < max_attempts: back to 'queued', available now. Otherwise: 'dead' with finished_at.
-        Either way set error_code 'lease_expired' and clear lease_owner and lease_until."""
-        now = self.clock()
-        touched_ids = []
-        with self.transaction() as c:
-            expired_runs = c.execute(
-                "SELECT id, attempts, max_attempts FROM run WHERE status = 'running' AND lease_until < ?",
-                (now,)
-            ).fetchall()
-            
-            for run in expired_runs:
-                run_id = run["id"]
-                touched_ids.append(run_id)
-                if run["attempts"] < run["max_attempts"]:
-                    c.execute(
-                        """UPDATE run 
-                           SET status = 'queued', available_at = ?, error_code = 'lease_expired',
-                               lease_owner = NULL, lease_until = NULL 
-                           WHERE id = ?""",
-                        (now, run_id)
-                    )
-                else:
-                    c.execute(
-                        f"""UPDATE run 
-                           SET status = 'dead', finished_at = {NOW_SQL}, error_code = 'lease_expired',
-                               lease_owner = NULL, lease_until = NULL 
-                           WHERE id = ?""",
-                        (run_id,)
-                    )
-        return touched_ids
+    def record_tool_call(self, run_id: str, seq: int, name: str, args: dict, result: dict,
+                         ok: bool, latency_ms: int) -> int:
+        """TODO: insert a 'tool' run_step and its tool_call (args and result as JSON) in ONE transaction.
+        Return the step id. Use `with self.transaction() as conn:`."""
+        raise NotImplementedError
 
+    def finish_run(self, run_id: str, status: str, error_code: str | None = None) -> None:
+        """TODO: set status, error_code and finished_at."""
+        raise NotImplementedError
 
+    # ------------------------------------------------------------------ Lab 3
 
-
-    def complete(self, run_id: str, worker_id: str, reply: str) -> bool:
-        """Save the model's reply and mark the run succeeded, together, only if this worker still owns it."""
-        with self.transaction() as c:
-            row = c.execute("SELECT thread_id FROM run WHERE id = ? AND status = 'running' AND lease_owner = ?",
-                            (run_id, worker_id)).fetchone()
-            if row is None:
-                return False
-            self.append_message(row["thread_id"], "model", reply)
-            c.execute(f"UPDATE run SET status = 'succeeded', lease_owner = NULL, lease_until = NULL,"
-                      f" error_code = NULL, finished_at = {NOW_SQL} WHERE id = ?", (run_id,))
-            return True
-
-    # ================================================================== Lab 1: cancel
-
-    def cancel_requested(self, run_id: str) -> bool:
-        """Check if a cancellation flag has been recorded for this execution run."""
-        row = self.conn.execute("SELECT cancel_requested FROM run WHERE id = ?", (run_id,)).fetchone()
-        return bool(row[0]) if row else False
-
-
-    def request_cancel(self, run_id: str) -> str | None:
-        """queued -> 'cancelled' at once. running -> set cancel_requested = 1."""
-        with self.transaction() as c:
-            row = c.execute("SELECT status FROM run WHERE id = ?", (run_id,)).fetchone()
-            if row is None:
-                return None
-            
-            status = row["status"]
-            if status == "queued":
-                c.execute(f"UPDATE run SET status = 'cancelled', finished_at = {NOW_SQL} WHERE id = ?", (run_id,))
-                return "cancelled"
-            elif status == "running":
-                c.execute("UPDATE run SET cancel_requested = 1 WHERE id = ?", (run_id,))
-                return "running"
-            
-            return status
-
-
-    def mark_cancelled(self, run_id: str, worker_id: str) -> bool:
-        """TODO (lab 1): 'running' and leased to this worker -> 'cancelled', clear the lease, set finished_at.
-        Return True if it changed the run."""
-        with self.transaction() as c:
-            cur = c.execute(
-                f"""UPDATE run 
-                   SET status = 'cancelled', lease_owner = NULL, lease_until = NULL, finished_at = {NOW_SQL} 
-                   WHERE id = ? AND status = 'running' AND lease_owner = ?""",
-                (run_id, worker_id)
-            )
-            return cur.rowcount > 0
-
-
-    # ================================================================== Lab 2: retry and dead-letter
-
-    def fail_attempt(self, run_id: str, worker_id: str, error_code: str, retryable: bool) -> str | None:
-        now = self.clock()
-        with self.transaction() as c:
-            row = c.execute(
-                "SELECT attempts, max_attempts FROM run WHERE id = ? AND status = 'running' AND lease_owner = ?",
-                (run_id, worker_id)
-            ).fetchone()
-            if row is None:
-                return None
-
-            attempts = row["attempts"]
-            max_attempts = row["max_attempts"]
-
-            if retryable and attempts < max_attempts:
-                delay = float(2 ** attempts)
-                available_at = now + delay
-                c.execute(
-                    """UPDATE run 
-                       SET status = 'queued', available_at = ?, error_code = ?, 
-                           lease_owner = NULL, lease_until = NULL 
-                       WHERE id = ?""",
-                    (available_at, error_code, run_id)
-                )
-                return "queued"
-            elif retryable:
-                # Ran out of retry attempts -> dead
-                c.execute(
-                    f"""UPDATE run 
-                       SET status = 'dead', finished_at = {NOW_SQL}, error_code = ?, 
-                           lease_owner = NULL, lease_until = NULL 
-                       WHERE id = ?""",
-                    (error_code, run_id)
-                )
-                return "dead"
-            else:
-                # Explicitly non-retryable failure -> failed
-                c.execute(
-                    f"""UPDATE run 
-                       SET status = 'failed', finished_at = {NOW_SQL}, error_code = ?, 
-                           lease_owner = NULL, lease_until = NULL 
-                       WHERE id = ?""",
-                    (error_code, run_id)
-                )
-                return "failed"
+    def page_messages(self, thread_id: str, after_seq: int = 0, limit: int = 20) -> tuple[list[dict], int | None]:
+        """TODO (lab 3): up to `limit` messages with seq > after_seq, as {"seq", "role", "text", "created_at"}.
+        Also return the after_seq for the next page, or None if this is the last page.
+        No OFFSET. limit below 1 raises ValueError."""
+        raise NotImplementedError

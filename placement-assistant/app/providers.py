@@ -94,7 +94,7 @@ class GeminiProvider:
 
 
 class ScriptedProvider:
-    """Replays a fixed list of turns in call order. No network, no quota. Used by the tests."""
+    """Replays a fixed list of turns. No network, no quota. Used by the tests and --mock."""
 
     model = "mock"
 
@@ -114,41 +114,10 @@ class ScriptedProvider:
         return step
 
 
-class PositionalMock:
-    """A scripted model that answers by position in the current turn, not by call count.
-    A fresh process that resumes a half-finished run gets the NEXT turn, not the first one.
-    `slow` sleeps before each answer, so you have time to kill the worker mid-run."""
-
-    model = "mock"
-
-    def __init__(self, turns: list[ModelTurn], slow: float = 0.0):
-        self.turns, self.slow = turns, slow
-        self.calls: list[list[dict]] = []
-
-    def generate(self, system: str, contents: list[dict], tools: list) -> ModelTurn:
-        import time
-
-        self.calls.append([dict(c) for c in contents])
-        last_user = max(i for i, c in enumerate(contents) if c["role"] == "user")
-        position = sum(1 for c in contents[last_user:] if c["role"] == "model")
-        if self.slow:
-            time.sleep(self.slow)
-        if position >= len(self.turns):
-            return ModelTurn(text="(mock) nothing more to do.")
-        return self.turns[position]
-
-
-def booking_mock(slow: float = 0.0) -> PositionalMock:
-    """Check, apply, book + notify, answer: every side-effect tool in one run."""
-    return PositionalMock([
+def default_mock() -> ScriptedProvider:
+    """Calls check_eligibility, which is a given sample, so it works before you write any tools."""
+    return ScriptedProvider([
         ModelTurn(text=None, tool_calls=[ToolCall("check_eligibility", {"student_id": "22CS045", "drive_id": 1})],
                   tokens_in=120, tokens_out=12),
-        ModelTurn(text=None, tool_calls=[ToolCall("apply_to_drive", {"student_id": "22CS045", "drive_id": 1})],
-                  tokens_in=160, tokens_out=12),
-        ModelTurn(text=None, tool_calls=[
-            ToolCall("book_interview_slot", {"student_id": "22CS045", "slot_id": 1}),
-            ToolCall("notify_student", {"student_id": "22CS045", "message": "Your Zoho interview slot is booked."})],
-            tokens_in=220, tokens_out=30),
-        ModelTurn(text="(mock) Done: applied to Zoho, booked slot 1 and sent you a confirmation.",
-                  tokens_in=300, tokens_out=20),
-    ], slow=slow)
+        ModelTurn(text="(mock) Yes, you meet all four Zoho rules.", tokens_in=180, tokens_out=14),
+    ], loop=True)
