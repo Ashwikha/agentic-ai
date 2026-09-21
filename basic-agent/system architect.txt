@@ -1,0 +1,78 @@
+                         ┌──────────────────────┐
+                         │        USER          │
+                         │                      │
+                         │ "Is Ashwikha         │
+                         │  eligible for TCS?"  │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │     AI AGENT / LLM   │
+                         │                      │
+                         │ Groq                 │
+                         │ GPT-OSS-20B          │
+                         │                      │
+                         │ Decides which tool   │
+                         │ should be called     │
+                         └──────────┬───────────┘
+                                    │
+                    ┌───────────────┼───────────────┐
+                    │               │               │
+                    ▼               ▼               ▼
+             ┌────────────┐  ┌────────────┐  ┌────────────────┐
+             │student_tool│  │ drive_tool │  │eligibility_tool│
+             │            │  │            │  │                │
+             │roll_no     │  │company     │  │drive_id        │
+             └─────┬──────┘  └─────┬──────┘  └───────┬────────┘
+                   │               │                  │
+                   └───────────────┼──────────────────┘
+                                   │
+                                   ▼
+                         ┌──────────────────────┐
+                         │    DATABASE LAYER    │
+                         │                      │
+                         │     SQLite           │
+                         │   placement.db       │
+                         └──────────┬───────────┘
+                                    │
+                ┌───────────────────┼──────────────────┐
+                │                   │                  │
+                ▼                   ▼                  ▼
+        ┌─────────────┐     ┌─────────────┐    ┌─────────────────┐
+        │   student   │     │   company   │    │     drive       │
+        │             │     │             │    │                 │
+        │ roll_no     │     │ name        │    │ company_id      │
+        │ name        │     └─────────────┘    │ role            │
+        │ branch      │                        │ ctc             │
+        │ cgpa        │                        │ deadline        │
+        │ backlogs    │                        │ status          │
+        │ grad_year   │                        └────────┬────────┘
+        └─────────────┘                                 │
+                                                        ▼
+                                              ┌─────────────────┐
+                                              │eligibility_rule │
+                                              │                 │
+                                              │ min_cgpa        │
+                                              │ max_backlogs    │
+                                              │ allowed_branch  │
+                                              │ grad_year       │
+                                              └─────────────────┘
+
+
+                         Tool Results
+                              │
+                              ▼
+                    ┌──────────────────────┐
+                    │       AI AGENT       │
+                    │                      │
+                    │ Compares student     │
+                    │ data with rules      │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │    FINAL RESPONSE    │
+                    │                      │
+                    │ "Ashwikha is         │
+                    │ eligible for TCS."   │
+                    └──────────────────────┘
