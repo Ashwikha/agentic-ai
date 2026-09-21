@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Placement Eligibility Agent</title>
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <div class="app">
+
+        <!-- ================= SIDEBAR ================= -->
+
+        <aside class="sidebar">
+
+            <div class="logo-section">
+
+                <div class="logo">PA</div>
+
+                <div>
+                    <h2>Placement Agent</h2>
+                    <p>AI Eligibility Assistant</p>
+                </div>
+
+            </div>
+
+
+            <button class="new-chat-btn" onclick="newChat()">
+                <span>＋</span>
+                New Chat
+            </button>
+
+
+            <div class="sidebar-section">
+
+                <p class="section-title">QUICK ACTIONS</p>
+
+
+                <button
+                    class="quick-action"
+                    onclick="useExample('Is Danish eligible for TCS?')"
+                >
+                    <span>🎓</span>
+
+                    Check Eligibility
+                </button>
+
+
+                <button
+                    class="quick-action"
+                    onclick="useExample('What is the TCS placement drive?')"
+                >
+                    <span>🏢</span>
+
+                    View Company Drive
+                </button>
+
+
+                <button
+                    class="quick-action"
+                    onclick="useExample('What are the eligibility requirements for TCS?')"
+                >
+                    <span>📋</span>
+
+                    View Requirements
+                </button>
+
+            </div>
+
+
+            <div class="sidebar-bottom">
+
+                <div class="database-status">
+
+                    <span class="status-dot"></span>
+
+                    <div>
+                        <strong>Database</strong>
+                        <small>Connected</small>
+                    </div>
+
+                </div>
+
+
+                <div class="powered-by">
+                    Powered by AI Agent
+                </div>
+
+            </div>
+
+        </aside>
+
+
+        <!-- ================= MAIN ================= -->
+
+        <main class="main">
+
+
+            <!-- HEADER -->
+
+            <header class="header">
+
+                <div class="header-left">
+
+                    <button
+                        class="mobile-menu"
+                        onclick="toggleSidebar()"
+                    >
+                        ☰
+                    </button>
+
+
+                    <div>
+
+                        <h1>Placement Eligibility</h1>
+
+                        <p>
+                            Check student eligibility for placement drives
+                        </p>
+
+                    </div>
+
+                </div>
+
+
+                <div class="header-status">
+
+                    <span class="status-dot"></span>
+
+                    Agent Online
+
+                </div>
+
+            </header>
+
+
+            <!-- ================= CHAT AREA ================= -->
+
+            <section
+                class="chat-area"
+                id="chatArea"
+            >
+
+
+                <!-- WELCOME SCREEN -->
+
+                <div
+                    class="welcome"
+                    id="welcomeScreen"
+                >
+
+                    <div class="welcome-icon">
+                        ✦
+                    </div>
+
+
+                    <h2>
+                        How can I help you?
+                    </h2>
+
+
+                    <p>
+                        Ask me about student eligibility,
+                        placement drives, or eligibility requirements.
+                    </p>
+
+
+                    <div class="example-grid">
+
+
+                        <!-- EXAMPLE 1 -->
+
+                        <button
+                            onclick="useExample('Is Danish eligible for TCS?')"
+                        >
+
+                            <span>🎓</span>
+
+                            <div>
+
+                                <strong>
+                                    Check eligibility
+                                </strong>
+
+                                <small>
+                                    Is Danish eligible for TCS?
+                                </small>
+
+                            </div>
+
+                        </button>
+
+
+                        <!-- EXAMPLE 2 -->
+
+                        <button
+                            onclick="useExample('What is the TCS placement drive?')"
+                        >
+
+                            <span>🏢</span>
+
+                            <div>
+
+                                <strong>
+                                    Company information
+                                </strong>
+
+                                <small>
+                                    What is the TCS placement drive?
+                                </small>
+
+                            </div>
+
+                        </button>
+
+
+                        <!-- EXAMPLE 3 -->
+
+                        <button
+                            onclick="useExample('What are the TCS eligibility requirements?')"
+                        >
+
+                            <span>📋</span>
+
+                            <div>
+
+                                <strong>
+                                    Requirements
+                                </strong>
+
+                                <small>
+                                    What are the TCS requirements?
+                                </small>
+
+                            </div>
+
+                        </button>
+
+
+                    </div>
+
+                </div>
+
+            </section>
+
+
+            <!-- ================= INPUT ================= -->
+
+            <div class="input-section">
+
+                <div class="input-wrapper">
+
+
+                    <textarea
+                        id="messageInput"
+                        rows="1"
+                        placeholder="Ask about placement eligibility..."
+                        onkeydown="handleKeyDown(event)"
+                    ></textarea>
+
+
+                    <button
+                        class="send-btn"
+                        id="sendBtn"
+                        onclick="sendMessage()"
+                        title="Send message"
+                    >
+                        ➤
+                    </button>
+
+
+                </div>
+
+
+                <p class="input-hint">
+
+                    Press <strong>Enter</strong> to send ·
+
+                    <strong>Shift + Enter</strong>
+                    for a new line
+
+                </p>
+
+            </div>
+
+        </main>
+
+    </div>
+
+
+    <!-- JAVASCRIPT -->
+
+    <script src="script.js"></script>
+
+</body>
+</html>
